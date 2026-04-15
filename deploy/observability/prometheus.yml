@@ -1,0 +1,27 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: chess_coach
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - host.docker.internal:8080
+        labels:
+          app: chess_coach
+
+  - job_name: docqa
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - host.docker.internal:8081
+        labels:
+          app: docqa
+
+  - job_name: multi_agent_tools
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - host.docker.internal:8082
+        labels:
+          app: multi_agent_tools

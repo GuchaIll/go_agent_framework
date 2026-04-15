@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -8,11 +9,30 @@ import (
 	"net/http"
 )
 
+// JobEnqueuer is used by HandleAsyncRequest to submit jobs.
+// It matches the Enqueue signature from contrib/queue.Queue.
+type JobEnqueuer interface {
+	Enqueue(ctx context.Context, job AsyncJob) error
+}
+
+// AsyncJob is the minimal job interface for async submission.
+type AsyncJob interface {
+	SetID(id string)
+	SetSessionID(sid string)
+}
+
+// JobGetter retrieves a job by ID for status polling.
+type JobGetter interface {
+	GetJob(ctx context.Context, jobID string) (interface{}, error)
+}
+
 // Orchestrator ties a graph to a state store and serves HTTP requests.
 type Orchestrator struct {
-	Graph   *Graph
-	Store   StateStore
-	workers chan struct{} // concurrency limiter
+	Graph    *Graph
+	Store    StateStore
+	Enqueuer JobEnqueuer // optional, needed for async mode
+	JobStore JobGetter   // optional, needed for async polling
+	workers  chan struct{}
 }
 
 // NewOrchestrator creates an orchestrator with the given concurrency limit.
@@ -25,8 +45,7 @@ func NewOrchestrator(graph *Graph, store StateStore, maxConcurrency int) *Orches
 	}
 }
 
-// HandleRequest is an http.HandlerFunc that decodes JSON input, executes the
-// graph, persists state, and returns selected output fields.
+// HandleRequest is the synchronous path: decode JSON, run graph, return result.
 func (o *Orchestrator) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	var input map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -56,9 +75,10 @@ func (o *Orchestrator) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := &Context{
-		SessionID: sessionID,
-		State:     session.State,
-		Logger:    slog.Default(),
+		SessionID:  sessionID,
+		State:      session.State,
+		Logger:     slog.Default(),
+		StdContext: r.Context(),
 	}
 
 	// Run graph.
@@ -77,6 +97,84 @@ func (o *Orchestrator) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Session-ID", sessionID)
 	json.NewEncoder(w).Encode(ctx.State)
+}
+
+// AsyncRequest is the JSON body for HandleAsyncRequest.
+type AsyncRequest struct {
+	GraphName string                 `json:"graph_name"`
+	SessionID string                 `json:"session_id,omitempty"`
+	Input     map[string]interface{} `json:"input"`
+}
+
+// HandleAsyncRequest enqueues a job and returns 202 Accepted with the job ID.
+// The client can poll HandleJobStatus for results.
+func (o *Orchestrator) HandleAsyncRequest(w http.ResponseWriter, r *http.Request) {
+	if o.Enqueuer == nil || o.JobStore == nil {
+		http.Error(w, "async mode not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req AsyncRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	if req.GraphName == "" {
+		http.Error(w, "graph_name is required", http.StatusBadRequest)
+		return
+	}
+
+	if req.SessionID == "" {
+		req.SessionID = generateSessionID()
+	}
+
+	jobID := generateSessionID()
+
+	// Create a concrete job envelope that satisfies AsyncJob.
+	job := &asyncJobEnvelope{
+		id:        jobID,
+		graphName: req.GraphName,
+		sessionID: req.SessionID,
+		input:     req.Input,
+	}
+
+	if err := o.Enqueuer.Enqueue(r.Context(), job); err != nil {
+		http.Error(w, fmt.Sprintf("failed to enqueue: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{
+		"job_id":     jobID,
+		"session_id": req.SessionID,
+		"status":     "PENDING",
+	})
+}
+
+// HandleJobStatus returns the current status of an async job.
+// Expects query parameter: ?job_id=...
+func (o *Orchestrator) HandleJobStatus(w http.ResponseWriter, r *http.Request) {
+	if o.JobStore == nil {
+		http.Error(w, "async mode not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	jobID := r.URL.Query().Get("job_id")
+	if jobID == "" {
+		http.Error(w, "job_id query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	job, err := o.JobStore.GetJob(r.Context(), jobID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("job not found: %v", err), http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(job)
 }
 
 // PickOutputFields returns only the named keys from a state map.
@@ -99,3 +197,14 @@ func generateSessionID() string {
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 		uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16])
 }
+
+// asyncJobEnvelope is a minimal struct used to pass job data to the enqueuer.
+type asyncJobEnvelope struct {
+	id        string
+	graphName string
+	sessionID string
+	input     map[string]interface{}
+}
+
+func (j *asyncJobEnvelope) SetID(id string)         { j.id = id }
+func (j *asyncJobEnvelope) SetSessionID(sid string) { j.sessionID = sid }

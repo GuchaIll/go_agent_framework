@@ -1,0 +1,16 @@
+{
+  "name": "email_draft",
+  "description": "Draft an email based on gathered context.",
+  "steps": [
+    {
+      "name": "gather",
+      "kind": "rag",
+      "depends_on": []
+    },
+    {
+      "name": "draft",
+      "kind": "llm",
+      "depends_on": ["gather"]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "research",
+  "description": "Search the web, retrieve relevant context, and summarise findings.",
+  "steps": [
+    {
+      "name": "search",
+      "kind": "tool",
+      "config": {"tool": "search_web"},
+      "depends_on": []
+    },
+    {
+      "name": "retrieve",
+      "kind": "rag",
+      "depends_on": ["search"]
+    },
+    {
+      "name": "summarise",
+      "kind": "llm",
+      "depends_on": ["retrieve"]
+    }
+  ]
+}

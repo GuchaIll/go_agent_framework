@@ -9,15 +9,30 @@ import (
 	"strings"
 )
 
-// LoadFromDir reads all .json skill files in a directory and registers
-// them into the given SkillRegistry.
+// LoadFromDir reads skill definitions from a directory and registers them.
+// It supports two layouts:
+//
+//  1. Flat: *.json files directly in dir (legacy).
+//  2. Folder-per-skill: each subdirectory contains a skill.json (Anthropic convention).
+//
+// Both layouts can coexist in the same directory.
 func LoadFromDir(dir string, reg *core.SkillRegistry) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return fmt.Errorf("skills: read dir %q: %w", dir, err)
 	}
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+		if e.IsDir() {
+			// Folder-per-skill: look for skill.json inside the subdirectory.
+			skillFile := filepath.Join(dir, e.Name(), "skill.json")
+			if _, err := os.Stat(skillFile); err == nil {
+				if err := loadFile(skillFile, reg); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())

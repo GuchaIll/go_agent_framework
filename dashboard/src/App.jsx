@@ -14,6 +14,18 @@ import AgentNode from './AgentNode';
 import ChatRoom from './ChatRoom';
 
 const nodeTypes = { agent: AgentNode };
+const TOOL_META = {
+  analyze_position: { description: 'Runs engine evaluation for the current position.' },
+  get_principal_variation: { description: 'Retrieves the best calculated continuation.' },
+  detect_blunders: { description: 'Checks whether the submitted move loses significant value.' },
+  is_move_legal: { description: 'Verifies that referenced moves are legal in the current position.' },
+  get_opening_plan: { description: 'Retrieves opening guidance from the curated library.', collection: 'openings' },
+  get_middlegame_theme: { description: 'Retrieves middlegame themes from the curated library.', collection: 'tactics' },
+  get_endgame_principle: { description: 'Retrieves endgame guidance from the curated library.', collection: 'endgames' },
+  get_general_advice: { description: 'Retrieves beginner coaching principles.', collection: 'beginner_principles' },
+  explain_tactic: { description: 'Retrieves tactic explanations for the move/question.', collection: 'beginner_principles' },
+  explain_puzzle_objective: { description: 'Retrieves puzzle-objective guidance.', collection: 'beginner_principles' },
+};
 
 // Layout nodes using dagre.
 function layoutGraph(nodes, edges) {
@@ -53,6 +65,7 @@ function buildNodesAndEdges(graphInfo) {
       model: n.model || '',
       status: 'idle',
       subProcess: null,
+      track: null,
     },
   }));
 
@@ -75,7 +88,16 @@ export default function App() {
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [graphName, setGraphName] = useState('');
   const [connected, setConnected] = useState(false);
+  const [pipelineTrack, setPipelineTrack] = useState('pending');
   const eventSourceRef = useRef(null);
+  const subprocessTimersRef = useRef(new Map());
+  const pipelineTrackRef = useRef('pending');
+  pipelineTrackRef.current = pipelineTrack;
+
+  const setPipelineTrackImmediate = useCallback((track) => {
+    pipelineTrackRef.current = track;
+    setPipelineTrack(track);
+  }, []);
 
   // Fetch graph structure on mount.
   useEffect(() => {
@@ -101,7 +123,7 @@ export default function App() {
 
   // SSE connection.
   const updateNodeStatus = useCallback(
-    (agentId, status, subProcess) => {
+    (agentId, status, subProcess, track) => {
       setNodes((prev) =>
         prev.map((n) => {
           if (n.id !== agentId) return n;
@@ -111,6 +133,7 @@ export default function App() {
               ...n.data,
               status: status ?? n.data.status,
               subProcess: subProcess !== undefined ? subProcess : n.data.subProcess,
+              track: track !== undefined ? track : n.data.track,
             },
           };
         })
@@ -120,6 +143,17 @@ export default function App() {
   );
 
   useEffect(() => {
+    const showTimedSubprocess = (agent, subProcess) => {
+      updateNodeStatus(agent, undefined, subProcess);
+      const existing = subprocessTimersRef.current.get(agent);
+      if (existing) clearTimeout(existing);
+      const timeout = setTimeout(() => {
+        updateNodeStatus(agent, undefined, null);
+        subprocessTimersRef.current.delete(agent);
+      }, 2000);
+      subprocessTimersRef.current.set(agent, timeout);
+    };
+
     const es = new EventSource('/dashboard/events');
     eventSourceRef.current = es;
 
@@ -135,6 +169,29 @@ export default function App() {
             break;
           case 'agent_end':
             updateNodeStatus(evt.agent, evt.status || 'success', null);
+            if (evt.agent === 'coach' && pipelineTrackRef.current === 'pending') {
+              setPipelineTrackImmediate('fast');
+              updateNodeStatus(evt.agent, undefined, undefined, 'fast');
+            }
+            break;
+          case 'tool_call': {
+            const tool = evt.detail?.tool;
+            const meta = TOOL_META[tool] || {};
+            showTimedSubprocess(evt.agent, {
+              name: tool,
+              kind: 'tool',
+              description: meta.description || evt.message,
+              collection: meta.collection || null,
+            });
+            break;
+          }
+          case 'skill_use':
+            showTimedSubprocess(evt.agent, {
+              name: evt.detail?.skill,
+              kind: 'skill',
+              description: evt.message,
+              collection: null,
+            });
             break;
           case 'subprocess_start':
             updateNodeStatus(evt.agent, undefined, {
@@ -147,12 +204,24 @@ export default function App() {
             break;
           case 'graph_start':
             // Reset all nodes to idle.
+            setPipelineTrackImmediate('pending');
             setNodes((prev) =>
               prev.map((n) => ({
                 ...n,
-                data: { ...n.data, status: 'idle', subProcess: null },
+                data: { ...n.data, status: 'idle', subProcess: null, track: null },
               }))
             );
+            break;
+          case 'thought':
+            if (evt.agent === 'coach' && typeof evt.message === 'string') {
+              if (evt.message.includes('fast path')) {
+                setPipelineTrackImmediate('fast');
+                updateNodeStatus(evt.agent, undefined, undefined, 'fast');
+              } else if (evt.message.includes('Coach triggered')) {
+                setPipelineTrackImmediate('slow');
+                updateNodeStatus(evt.agent, undefined, undefined, 'slow');
+              }
+            }
             break;
           default:
             break;
@@ -163,10 +232,12 @@ export default function App() {
     };
 
     return () => {
+      subprocessTimersRef.current.forEach((timeout) => clearTimeout(timeout));
+      subprocessTimersRef.current.clear();
       es.close();
       setConnected(false);
     };
-  }, [updateNodeStatus, setNodes]);
+  }, [setPipelineTrackImmediate, updateNodeStatus, setNodes]);
 
   return (
     <div style={{ width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -192,7 +263,7 @@ export default function App() {
             />
           </ReactFlow>
         </div>
-        <ChatRoom eventSourceRef={eventSourceRef} />
+        <ChatRoom eventSourceRef={eventSourceRef} pipelineTrack={pipelineTrack} />
       </div>
 
       {/* Keyframe animations */}

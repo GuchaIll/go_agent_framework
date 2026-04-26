@@ -72,6 +72,26 @@ func (i *instrumentedLLM) Generate(ctx context.Context, prompt string) (string, 
 	return completion, err
 }
 
+func (i *instrumentedLLM) Provider() string {
+	if i.opts.Provider != "" {
+		return i.opts.Provider
+	}
+	if descriptor, ok := i.base.(llm.Describer); ok {
+		return descriptor.Provider()
+	}
+	return ""
+}
+
+func (i *instrumentedLLM) Model() string {
+	if i.opts.Model != "" {
+		return i.opts.Model
+	}
+	if descriptor, ok := i.base.(llm.Describer); ok {
+		return descriptor.Model()
+	}
+	return ""
+}
+
 func (i *instrumentedLLM) labels(ctx context.Context) LLMLabels {
 	provider := i.opts.Provider
 	model := i.opts.Model

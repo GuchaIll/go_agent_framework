@@ -22,7 +22,7 @@ const STATUS_TEXT = {
 };
 
 export default function AgentNode({ data }) {
-  const { label, description, tools, skills, rag, agents, model, status, subProcess } =
+  const { label, description, tools, skills, rag, agents, model, status, subProcess, track } =
     data;
   const bg = STATUS_BG[status] || STATUS_BG.idle;
   const fg = STATUS_TEXT[status] || STATUS_TEXT.idle;
@@ -49,6 +49,11 @@ export default function AgentNode({ data }) {
             {model === 'analysis' ? '🧠 analysis' : '⚡ orchestration'}
           </span>
         )}
+        {track && (
+          <span style={{ ...styles.badge, background: track === 'fast' ? '#16a34a' : '#ea580c', color: '#fff' }}>
+            {track} track
+          </span>
+        )}
         {renderBadges('tools', tools, fg)}
         {renderBadges('skills', skills, fg)}
         {renderBadges('rag', rag, fg)}
@@ -62,7 +67,13 @@ export default function AgentNode({ data }) {
             background: BADGE_COLORS[subProcess.kind] || '#555',
           }}
         >
-          {subProcess.kind}: {subProcess.name}
+          <div>{subProcess.kind}: {subProcess.name}</div>
+          {subProcess.collection && (
+            <div style={styles.subprocessMeta}>collection: {subProcess.collection}</div>
+          )}
+          {subProcess.description && (
+            <div style={styles.subprocessMeta}>{subProcess.description}</div>
+          )}
         </div>
       )}
 
@@ -139,6 +150,13 @@ const styles = {
     color: '#fff',
     fontWeight: 600,
     animation: 'fadeIn 0.3s ease',
+  },
+  subprocessMeta: {
+    marginTop: 4,
+    fontSize: 10,
+    fontWeight: 400,
+    lineHeight: 1.35,
+    opacity: 0.95,
   },
   handle: {
     width: 8,

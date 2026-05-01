@@ -17,6 +17,8 @@ type OpenRouterClient struct {
 	APIKey     string
 	ModelName  string       // e.g. "z-ai/glm-4.5-air:free"
 	BaseURL    string       // override for testing; defaults to openRouterBaseURL
+	AppName    string       // optional X-Title header
+	AppURL     string       // optional HTTP-Referer header
 	HTTPClient *http.Client // defaults to http.DefaultClient
 }
 
@@ -75,6 +77,12 @@ func (c *OpenRouterClient) Generate(ctx context.Context, prompt string) (string,
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	if c.AppURL != "" {
+		req.Header.Set("HTTP-Referer", c.AppURL)
+	}
+	if c.AppName != "" {
+		req.Header.Set("X-Title", c.AppName)
+	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
